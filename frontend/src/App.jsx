@@ -100,7 +100,7 @@ export default function App() {
     }
   };
 
-  const handleAskTutor = async ({ message, selected_text, context_material_id }) => {
+  const handleAskTutor = async ({ message, selected_text, context_material_id, history }) => {
     if (!activeCourse) return { answer: "Lütfen bir ders seçin." };
     const res = await api.askTutor({
       course_id: activeCourse.id,
@@ -108,7 +108,8 @@ export default function App() {
       selected_text: selected_text || selectedTextSnippet,
       context_material_id: context_material_id || activeMaterialId,
       video_id: activeVideoId,
-      timestamp: currentTimestamp
+      timestamp: currentTimestamp,
+      history: history || []
     });
 
     const data = res.data;

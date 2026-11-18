@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 
 class CourseCreate(BaseModel):
     name: str
@@ -47,6 +47,7 @@ class AskTutorRequest(BaseModel):
     selected_text: Optional[str] = None
     video_id: Optional[str] = None
     timestamp: Optional[float] = None
+    history: Optional[List[Dict[str, Any]]] = None
 
 class QuizGenerateRequest(BaseModel):
     course_id: int

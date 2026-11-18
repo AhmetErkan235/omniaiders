@@ -154,28 +154,44 @@ def ask_tutor(req: AskTutorRequest):
     cursor.execute("SELECT id, title, type, content, metadata_json FROM materials WHERE course_id = ? ORDER BY id ASC", (req.course_id,))
     all_materials = [dict(m) for m in cursor.fetchall()]
 
-    search_query = expand_query(req.selected_text or req.message)
+    # Check if current message explicitly specifies a new math concept or chapter
+    clean_msg = req.message.lower().strip()
+    topic_keywords = [
+        'teorem', 'theorem', 'tanim', 'tanım', 'definition', 'limit', 'turev', 'türev',
+        'integral', 'fonksiyon', 'function', 'sandvic', 'sandviç', 'squeeze', 'ivt', 'mvt',
+        'rolle', 'lhopital', 'zincir', 'chain', 'parcali', 'piecewise', 'asimptot',
+        'intermediate', 'mean value', 'extreme value', 'sureklilik', 'süreklilik'
+    ]
+    
+    has_explicit_topic = any(kw in clean_msg for kw in topic_keywords)
+    has_ordinal = bool(re.search(r'(?:^|)(?:(\d+)\.?(?:inci|nci|üncü|ncı)?|(ilk|birinci|ikinci|üçüncü|dördüncü|beşinci))\s*(?:pdf|not|materyal|slayt|dosya|konu|bölüm|bolum|chapter)', clean_msg))
+    has_label = bool(re.search(r'(?:definit(?:ion|on)|de(?:fi|.)nition|tan.m|theor(?:em|y)|teor(?:em|i)|example|ornek|örnek|lemma|corollary|section|bolum|bölüm|chapter)\s*(\d+(?:\.\d+)*)', clean_msg, re.I))
 
-    # Detect material
-    ordinal_reference = re.search(
-        r'(?:^|\b)(?:(\d+)\.?(?:inci|nci|üncü|ncı)?|(ilk|birinci|ikinci|üçüncü|dördüncü|beşinci))\s*(?:pdf|not|materyal|slayt|dosya|konu|bölüm|bolum|chapter)',
-        req.message.lower()
-    )
-    named_reference = any(
-        Path(m['title']).stem.lower() in req.message.lower()
-        for m in all_materials if m.get('title')
-    )
-    explicit_material = detect_referenced_material(req.message, all_materials)
+    previous_topic = ""
+    if not (has_explicit_topic or has_ordinal or has_label) and req.history:
+        for h in reversed(req.history):
+            if h.get("role") == "user":
+                txt = (h.get("text") or h.get("content") or "").strip()
+                if any(kw in txt.lower() for kw in topic_keywords):
+                    previous_topic = txt
+                    break
 
+    effective_topic_query = f"{previous_topic} {req.message}" if previous_topic else (req.selected_text or req.message)
+    search_query = expand_query(effective_topic_query)
+
+    explicit_material = detect_referenced_material(effective_topic_query, all_materials)
     active_material = next((m for m in all_materials if m['id'] == req.context_material_id), None)
+
     if explicit_material:
         target_material = explicit_material
-        target_page = find_relevant_note_page(target_material.get('content') or '', req.selected_text or req.message)
+        target_page = find_relevant_note_page(target_material.get('content') or '', req.selected_text or effective_topic_query)
         if not target_page:
             target_page = find_relevant_note_page(target_material.get('content') or '', search_query)
+        if not target_page:
+            target_page = {'page': 1, 'location': 'Sayfa 1', 'score': 10, 'excerpt': (target_material.get('content') or '')[:1000]}
     else:
         active_page = find_relevant_note_page(
-            active_material.get('content') or '', req.selected_text or req.message
+            active_material.get('content') or '', req.selected_text or effective_topic_query
         ) if active_material else None
         best_material, best_page = find_best_material(all_materials, search_query)
         if active_page and (not best_page or active_page['score'] >= best_page['score']):
@@ -225,7 +241,8 @@ def ask_tutor(req: AskTutorRequest):
         user_message=req.message,
         notes_context=notes_context,
         video_context=video_context,
-        selected_text=req.selected_text
+        selected_text=req.selected_text,
+        history=req.history
     )
 
     top_match = matched_videos[0] if matched_videos else None

@@ -96,10 +96,19 @@ export default function AITutorPanel({
     setIsLoading(true);
 
     try {
+      const historyToSend = messages
+        .filter(m => m.text && !m.isError)
+        .slice(-8)
+        .map(m => ({
+          role: m.role,
+          text: m.text
+        }));
+
       const response = await onAskTutor({
         message: textToSend,
         selected_text: selectedText || null,
-        context_material_id: activeMaterialId || null
+        context_material_id: activeMaterialId || null,
+        history: historyToSend
       });
 
       const assistantMsg = {

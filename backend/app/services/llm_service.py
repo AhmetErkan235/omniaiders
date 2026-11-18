@@ -10,8 +10,8 @@ from ..config import DEFAULT_GEMINI_MODEL
 CANDIDATE_MODELS = [
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-3.8-flash",
-    "gemini-3.5-flash"
+    "gemini-flash-lite-latest",
+    "gemini-3-flash-preview"
 ]
 
 def get_gemini_api_key() -> str:
@@ -30,7 +30,7 @@ def get_client() -> Optional[genai.Client]:
         return None
     try:
         # 15s timeout complies with Gemini API minimum (>= 10s) and keeps requests snappy
-        return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=30000))
+        return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=60000))
     except Exception as e:
         print(f"Failed to initialize Gemini Client: {e}")
         return None
@@ -95,7 +95,8 @@ def ask_tutor_llm(
     user_message: str,
     notes_context: str = "",
     video_context: str = "",
-    selected_text: Optional[str] = None
+    selected_text: Optional[str] = None,
+    history: Optional[List[Dict[str, Any]]] = None
 ) -> str:
     """
     Intelligent Study Tutor that explains concepts, teaches step-by-step,
@@ -103,39 +104,44 @@ def ask_tutor_llm(
     """
     client = get_client()
 
-    def build_resilient_response():
-        clean_excerpt = ""
-        if notes_context:
-            match_exc = re.search(r'İlgili Not Kesiti:\s*(.*)', notes_context, re.DOTALL)
-            clean_excerpt = (match_exc.group(1).strip() if match_exc else notes_context.strip())[:400]
-        ref_block = f"\n\n> **Ders Notundaki Tanım:**\n> {clean_excerpt}\n" if clean_excerpt else ""
-        return (
-            f"### 📘 {course_name} — Konu Açıklaması\n\n"
-            f"**\"{user_message}\"** konusunu ders notlarındaki tanımlarla inceledik.{ref_block}\n"
-            "Bu kavramın mantığını ve soru çözümünü aşağıdaki videodan ilgili dakikadan doğrudan izleyebilirsin."
-        )
-
     if not client:
-        return build_resilient_response()
+        if notes_context:
+            return f"Ders notlarından ilgili bölüm:\n\n{notes_context[:1000]}\n\nSorunuz ('{user_message}') hakkında detaylı bir anlatım için lütfen Ayarlar'dan geçerli bir Gemini API anahtarı ekleyin."
+        return f"Sorunuz ('{user_message}') alındı. Detaylı yapay zeka konu anlatımı için lütfen Ayarlar'dan Gemini API anahtarı ekleyin."
 
-    system_prompt = """Sen üniversite ve sınav dersleri için üst düzey bir Yapay Zeka Akademik Çalışma Koçusun (OmniStudy AI Tutor). Görevin öğrenciye konuyu en derin, kapsamlı, pedagojik ve anlaşılır şekilde öğretmek; kavramları sağlam temellere oturtmak ve ders notlarındaki konuları ilgili YouTube videolarıyla bağdaştırmaktır.
+    system_prompt = """Sen üniversite ve sınav dersleri için üst düzey, samimi ve son derece bilgili bir Yapay Zeka Akademik Çalışma Koçusun (OmniStudy AI Tutor). Görevin öğrenciye konuyu en derin, kapsamlı, pedagojik ve anlaşılır şekilde öğretmek; kavramları sağlam temellere oturtmak ve ders notlarındaki konuları ilgili YouTube videolarıyla bağdaştırmaktır.
 
-KESİN VE TAVİZSİZ KURALLAR:
-1. KESİNLİKLE DAKİKA, SANİYE VEYA ZAMAN DAMGASI VERME: '03:15\'te', '00:00 - 05:00', 'dakika 12' gibi zaman ifadeleri KESİNLİKLE YAZMA. Kullanıcı videoları dakikasız, doğrudan bütün video olarak izlemektedir.
-2. VİDEO REHBERLİĞİ VE TIKLANABİLİR VİDEO BUTONLARI:
-   - Sana sağlanan listeden konunun gerektirdiği kadar en alakalı videoları seç (konuya göre 1, 2, 3 veya daha fazla olabilir).
-   - 'Neden bu sıra' gibi kalıp başlıklar veya ifadeler KESİNLİKLE YAZMA.
-   - Her video için öğrencinin tek tıkla videoyu başlatabileceği şu formatı kullan:
+TEMEL PRENSİPLER VE KURALLAR:
+1. DOĞAL İNSAN DİYALOĞU VE SOHBET BAĞLAMI:
+   - Öğrenciyle birebir özel ders veren usta bir hoca gibi sıcak, doğal, akıcı ve teşvik edici konuş.
+   - Önceki konuşmaları MUTLAKA hatırla. Öğrenci "tamam sen de anlatsana", "örnek çöz", "anlamadım", "nasıl yani", "ispatı nedir", "devam et" gibi devam soruları sorduğunda önceki konuşulan konuyu bilerek doğrudan ve derinlemesine yanıt ver. Asla konuyu unutma veya sıfırdan yapay şablonlarla başlama!
+   - KESİNLİKLE ROBOTİK ŞABLONLAR KULLANMA ("X konusunu ders notlarındaki tanımlarla inceledik" gibi yapay kalıplar KESİNLİKLE YASAKTIR). Doğrudan bir hoca gibi konuya gir ve anlat.
+2. KESİNLİKLE DAKİKA, SANİYE VEYA ZAMAN DAMGASI VERME: '03:15\'te', '00:00 - 05:00', 'dakika 12' gibi zaman ifadeleri KESİNLİKLE YAZMA.
+3. VİDEO REHBERLİĞİ VE TIKLANABİLİR VİDEO BUTONLARI:
+   - Sana sağlanan listeden konunun gerektirdiği kadar en alakalı videoları seç.
+   - Her video için şu tıklanabilir formatı kullan:
      [▶ Videoyu Aç: Video Başlığı](video://VIDEO_ID)
-   - Butonun hemen altında o videoda tam olarak ne anlatıldığını özetle ve videolar arasında bağlantı kur.
-3. KONU ANLATIMINI KAPSAMLI, DERİN VE DOYURUCU YAP (Yüzeysel veya kısa 1-2 cümlelik özetler KESİNLİKLE VERME):
-   - 1. Bölüm: Kavramın/Teoremin Eksiksiz Tanımı ve Matematiksel Formülasyonu (LaTeX ile formülleri eksiksiz yaz).
-   - 2. Bölüm: Sezgisel Mantığı, Geometrik Anlamı ve 'Neden buna ihtiyaç var?' sorusunun açıklaması.
-   - 3. Bölüm: Adım Adım Çözümlü Uygulama Örneği (Öğrencinin somut olarak nasıl uygulayacağını gösteren detaylı bir örnek).
-   - 4. Bölüm: Püf Noktaları, Sınav Tuzakları ve Dikkat Edilmesi Gereken Koşullar (Öğrencilerin en çok hata yaptığı yerler).
-4. MATEMATİKSEL FORMÜLLERİ KaTeX FORMATINDA YAZ: Satır içi için tek dolar ($x \in \mathbb{R}$), blok formüller için çift dolar ($$\lim_{{x \to a}} f(x) = L$$).
-5. EVRENSEL AKADEMİK DİL: Öğrenci hangi dersi çalışıyorsa (Calculus, Limit, Türev, Lineer Cebir, Fizik vb.) doğrudan o konunun terminolojisini kullan; dersin adını sürekli tekrarlama.
+   - Butonun hemen altında o videoda ne anlatıldığını özetle ve videolar arasında bağlantı kur.
+   - Eğer öğrenci devam sorusu soruyorsa (örn: "şurayı anlamadım", "örnek çöz", "sen anlat"), önce onun sorusunu detaylıca çöz ve açıkla, gerekiyorsa ilgili videoya atıfta bulun.
+4. KONU ANLATIMINI KAPSAMLI, DERİN VE DOYURUCU YAP:
+   - Kavramın Sezgisel Mantığı, Geometrik Anlamı ve 'Neden buna ihtiyaç var?' sorusunun açıklaması.
+   - Matematiksel Formülasyon ve Koşullar (LaTeX formatında).
+   - Adım Adım Çözümlü Uygulama Örnekleri (somut problemler).
+   - Püf Noktaları ve Sınav Tuzakları.
+5. MATEMATİKSEL FORMÜLLERİ KaTeX FORMATINDA YAZ: Satır içi için tek dolar ($x \in \mathbb{R}$), blok formüller için çift dolar ($$\lim_{{x \to a}} f(x) = L$$).
 6. Türkçe, samimi, teşvik edici ve akıcı bir öğretmen üslubu kullan. Cümleleri asla yarım veya kesik bırakma."""
+
+    history_prompt = ""
+    if history:
+        recent = [h for h in history if (h.get("text") or h.get("content"))]
+        turns = []
+        for h in recent[-8:]:
+            role = "Öğrenci" if h.get("role") == "user" else "OmniStudy AI"
+            t = (h.get("text") or h.get("content") or "").strip()
+            if t:
+                turns.append(f"{role}: {t[:600]}")
+        if turns:
+            history_prompt = "\n--- ÖNCEKİ SOHBET GEÇMİŞİ (DİYALOG BAĞLAMI) ---\n" + "\n".join(turns) + "\n--------------------------------------------\n"
 
     context_prompt = ""
     if selected_text:
@@ -145,17 +151,26 @@ KESİN VE TAVİZSİZ KURALLAR:
     if video_context:
         context_prompt += f"\n{video_context[:3000]}\n"
 
-    final_prompt = f"{context_prompt}\nÖğrencinin Sorusu / Talebi: {user_message}"
+    final_prompt = f"{history_prompt}{context_prompt}\nÖğrencinin Güncel Sorusu / Talebi: {user_message}"
 
     try:
         response = generate_with_fallback(client=client, contents=[system_prompt, final_prompt])
         text = (getattr(response, 'text', None) or '').strip()
-        if not text:
-            return build_resilient_response()
-        return text
+        if text:
+            return text
     except Exception as e:
         print(f"All LLM candidate models failed: {e}")
-        return build_resilient_response()
+
+    # Fallback if generation completely failed
+    if notes_context:
+        match_exc = re.search(r'İlgili Not Kesiti:\s*(.*)', notes_context, re.DOTALL)
+        clean_excerpt = (match_exc.group(1).strip() if match_exc else notes_context.strip())[:600]
+        return (
+            f"Harika bir konuyu çalışıyoruz! Notlarımızdaki ilgili tanım şöyle:\n\n"
+            f"> **Ders Notu:**\n> {clean_excerpt}\n\n"
+            f"'{user_message}' sorunla ilgili bu konunun ispatını, sezgisel mantığını veya sınav tipi bir örnek çözümünü hemen detaylandırayım mı?"
+        )
+    return f"'{user_message}' sorunla ilgili çalışmaya devam ediyoruz! Bu konunun mantığını ve adım adım örnek çözümünü birlikte inceleyelim."
 
 def generate_video_chapters(video_title: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Turn transcript snippets into an insightful, granular chapter and problem-solving index."""
