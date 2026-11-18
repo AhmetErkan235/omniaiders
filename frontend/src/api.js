@@ -33,9 +33,12 @@ export const api = {
   addTextNote: (courseId, title, content) => axios.post(`${API_BASE}/materials/text`, { course_id: courseId, title, content }),
   getMaterial: (materialId) => axios.get(`${API_BASE}/materials/${materialId}`),
   deleteMaterial: (materialId) => axios.delete(`${API_BASE}/materials/${materialId}`),
+  analyzePageVision: (materialId, pageNumber) => axios.post(`${API_BASE}/materials/${materialId}/analyze-page-vision/${pageNumber}`),
+  analyzeSparsePagesVision: (materialId) => axios.post(`${API_BASE}/materials/${materialId}/analyze-sparse-pages-vision`),
 
   // YouTube
   addYouTubeSource: (courseId, url) => axios.post(`${API_BASE}/youtube/add`, { course_id: courseId, url }),
+  discoverPlaylists: (courseId, query) => axios.post(`${API_BASE}/youtube/discover-curriculum-playlists`, { course_id: courseId, query }),
   getVideoTranscripts: (courseId, videoId) => axios.get(`${API_BASE}/youtube/${courseId}/transcripts/${videoId}`),
   getVideoChapters: (courseId, videoId) => axios.get(`${API_BASE}/youtube/${courseId}/chapters/${videoId}`),
   deleteVideo: (courseId, videoId) => axios.delete(`${API_BASE}/youtube/${courseId}/${videoId}`),

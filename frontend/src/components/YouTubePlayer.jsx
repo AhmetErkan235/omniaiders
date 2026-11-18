@@ -28,7 +28,8 @@ export default function YouTubePlayer({
   onToggleMaximize,
   isMinimized = false,
   onToggleMinimize,
-  courseId
+  courseId,
+  onOpenYouTube
 }) {
   const [selectedVideoId, setSelectedVideoId] = useState(activeVideoId || (videos[0] ? videos[0].video_id : ''));
   const [currentSeek, setCurrentSeek] = useState(currentTimestamp || 0);
@@ -117,9 +118,19 @@ export default function YouTubePlayer({
           <YouTubeIcon className="w-6 h-6" />
         </div>
         <h3 className="font-semibold text-slate-200 text-xs mb-1">Henüz YouTube Videosu Eklenmedi</h3>
-        <p className="text-[11px] text-slate-400 max-w-sm">
-          Üst menüden YouTube linki ekleyin.
+        <p className="text-[11px] text-slate-400 max-w-sm mb-3">
+          Üst menüden YouTube linki ekleyebilir veya yapay zekanın ders müfredatınıza uygun oynatma listeleri bulmasını sağlayabilirsiniz.
         </p>
+        {onOpenYouTube && (
+          <button
+            type="button"
+            onClick={onOpenYouTube}
+            className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/20 flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Müfredata Göre Playlist Keşfet</span>
+          </button>
+        )}
       </div>
     );
   }
@@ -185,6 +196,19 @@ export default function YouTubePlayer({
               className="p-1 rounded-lg hover:bg-red-500/20 text-slate-400 hover:text-red-400 transition"
             >
               <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {/* Discover Playlists Button */}
+          {onOpenYouTube && (
+            <button
+              type="button"
+              onClick={onOpenYouTube}
+              title="Müfredata uygun oynatma listeleri öner ve ekle"
+              className="px-2 py-1 rounded-lg bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 hover:text-white border border-indigo-500/30 text-[11px] font-medium flex items-center gap-1 transition shrink-0 ml-1 cursor-pointer"
+            >
+              <Sparkles className="w-3 h-3 text-indigo-400" />
+              <span className="hidden sm:inline">Playlist Keşfet</span>
             </button>
           )}
         </div>

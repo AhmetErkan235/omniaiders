@@ -3,10 +3,13 @@ import json
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse, Response
+import fitz
 from typing import Optional, List
 from ..database import get_db
 from ..config import UPLOADS_DIR
 from ..services.document_service import extract_content_from_file
+from ..services.llm_service import analyze_page_with_vision
 from ..services.web_service import extract_web_content
 from ..models import LinkAddRequest, TextNoteAddRequest
 
@@ -199,3 +202,198 @@ def delete_material(material_id: int):
     conn.commit()
     conn.close()
     return {"message": "Materyal silindi."}
+
+
+PAGE_CACHE_DIR = UPLOADS_DIR / "page_cache"
+PAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+@router.get("/{material_id}/page-image/{page_number}")
+def get_material_page_image(material_id: int, page_number: int):
+    """
+    Renders and serves a high-resolution, crisp PNG image of a specific PDF page.
+    Results are cached on disk for instant loading.
+    """
+    cache_file = PAGE_CACHE_DIR / f"{material_id}_p{page_number}.png"
+    if cache_file.exists():
+        return FileResponse(cache_file, media_type="image/png")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT file_path, type FROM materials WHERE id = ?", (material_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row or not row['file_path'] or not os.path.exists(row['file_path']):
+        raise HTTPException(status_code=404, detail="Materyal veya dosya bulunamadı.")
+
+    file_path = row['file_path']
+    ext = Path(file_path).suffix.lower()
+
+    if ext != '.pdf':
+        if ext in ('.png', '.jpg', '.jpeg', '.webp'):
+            return FileResponse(file_path)
+        raise HTTPException(status_code=400, detail="Bu materyal bir PDF belgesi değil.")
+
+    try:
+        doc = fitz.open(file_path)
+        total_pages = len(doc)
+        if page_number < 1 or page_number > total_pages:
+            raise HTTPException(status_code=404, detail=f"Sayfa {page_number} bulunamadı (Toplam sayfa: {total_pages}).")
+
+        page = doc.load_page(page_number - 1)
+        # 150 DPI gives crisp text and sharp math formulas
+        pix = page.get_pixmap(dpi=150)
+        img_bytes = pix.tobytes("png")
+        doc.close()
+
+        with open(cache_file, "wb") as f:
+            f.write(img_bytes)
+
+        return Response(content=img_bytes, media_type="image/png")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sayfa görseli oluşturulamadı: {str(e)}")
+
+
+@router.post("/{material_id}/analyze-page-vision/{page_number}")
+def analyze_page_vision_endpoint(material_id: int, page_number: int):
+    """
+    Analyzes a specific document/PDF page visually with Gemini Vision.
+    Extracts formulas, diagrams, chemical/physical structures, and rich academic notes,
+    then updates the page content in the database.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, course_id, title, file_path, metadata_json FROM materials WHERE id = ?", (material_id,))
+    row = cursor.fetchone()
+    if not row or not row['file_path'] or not os.path.exists(row['file_path']):
+        conn.close()
+        raise HTTPException(status_code=404, detail="Materyal dosyası bulunamadı.")
+
+    cursor.execute("SELECT name FROM courses WHERE id = ?", (row['course_id'],))
+    course_row = cursor.fetchone()
+    course_name = course_row['name'] if course_row else ""
+
+    file_path = row['file_path']
+    ext = Path(file_path).suffix.lower()
+
+    img_bytes = None
+    if ext == '.pdf':
+        try:
+            doc = fitz.open(file_path)
+            if page_number < 1 or page_number > len(doc):
+                doc.close()
+                conn.close()
+                raise HTTPException(status_code=404, detail="Geçersiz sayfa numarası.")
+            page = doc.load_page(page_number - 1)
+            pix = page.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("jpeg")
+            doc.close()
+        except Exception as e:
+            conn.close()
+            raise HTTPException(status_code=500, detail=f"Sayfa görseli oluşturulamadı: {str(e)}")
+    elif ext in ('.png', '.jpg', '.jpeg', '.webp'):
+        try:
+            with open(file_path, 'rb') as f:
+                img_bytes = f.read()
+        except Exception as e:
+            conn.close()
+            raise HTTPException(status_code=500, detail=f"Görsel okunamadı: {str(e)}")
+    else:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Bu dosya türü görsel incelemeyi desteklemiyor.")
+
+    # Call Gemini Multimodal Vision
+    vision_text = analyze_page_with_vision(img_bytes, course_name, page_number)
+    if not vision_text or vision_text.startswith("Görsel analiz edilirken bir hata oluştu"):
+        conn.close()
+        raise HTTPException(status_code=500, detail=vision_text)
+
+    # Update metadata_json and content in SQLite
+    meta = {}
+    if row['metadata_json']:
+        try:
+            meta = json.loads(row['metadata_json'])
+        except Exception:
+            meta = {}
+
+    pages = meta.get('pages', [])
+    updated = False
+    for p in pages:
+        if p.get('page') == page_number:
+            p['text'] = vision_text
+            p['is_vision_analyzed'] = True
+            updated = True
+            break
+
+    if not updated:
+        pages.append({
+            'page': page_number,
+            'text': vision_text,
+            'is_vision_analyzed': True
+        })
+        pages.sort(key=lambda x: x.get('page', 0))
+
+    meta['pages'] = pages
+    meta['page_count'] = len(pages)
+    new_meta_json = json.dumps(meta, ensure_ascii=False)
+    new_content = "\n\n".join([f"--- Sayfa {p['page']} ---\n{p['text']}" for p in pages])
+
+    cursor.execute("""
+    UPDATE materials 
+    SET metadata_json = ?, content = ?
+    WHERE id = ?
+    """, (new_meta_json, new_content, material_id))
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "page": page_number,
+        "text": vision_text,
+        "message": f"{page_number}. sayfa yapay zeka ile görsel olarak başarıyla incelendi ve notlara işlendi."
+    }
+
+@router.post("/{material_id}/analyze-sparse-pages-vision")
+def analyze_sparse_pages_vision(material_id: int):
+    """
+    Scans through pages that have very little text (e.g. diagrams/scans with < 120 chars)
+    and enriches up to 4 sparse pages per call using Gemini Vision.
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, course_id, title, file_path, metadata_json FROM materials WHERE id = ?", (material_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Materyal bulunamadı.")
+
+    meta = {}
+    if row['metadata_json']:
+        try:
+            meta = json.loads(row['metadata_json'])
+        except Exception:
+            meta = {}
+
+    pages = meta.get('pages', [])
+    sparse_pages = [p.get('page') for p in pages if len(p.get('text', '').strip()) < 120 and not p.get('is_vision_analyzed')]
+    conn.close()
+
+    if not sparse_pages:
+        return {"success": True, "analyzed_count": 0, "message": "Görsel olarak taranması gereken boş veya yetersiz sayfa bulunamadı."}
+
+    # Process first 3 sparse pages to ensure quick response without timeout
+    analyzed = []
+    for pnum in sparse_pages[:3]:
+        try:
+            res = analyze_page_vision_endpoint(material_id, pnum)
+            analyzed.append(pnum)
+        except Exception as e:
+            print(f"Error analyzing page {pnum}: {e}")
+
+    return {
+        "success": True,
+        "analyzed_count": len(analyzed),
+        "pages": analyzed,
+        "remaining_sparse": len(sparse_pages) - len(analyzed),
+        "message": f"{len(analyzed)} sayfa başarıyla görsel olarak incelendi ve notlara eklendi."
+    }

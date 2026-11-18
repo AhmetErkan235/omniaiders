@@ -18,6 +18,7 @@ export default function AITutorPanel({
   onAskTutor,
   activeMaterialId,
   selectedText,
+  onClearSelectedText,
   onSeekTimestamp,
   onTriggerQuiz,
   isMaximized = false,
@@ -28,16 +29,24 @@ export default function AITutorPanel({
   onClearPromptToAsk
 }) {
   const courseId = course?.id || 'default';
-  const storageKey = `omnistudy_chat_v3_${courseId}`;
+  const courseTitle = course?.title || 'Ders';
+  const storageKey = `omnistudy_chat_v5_${courseId}`;
 
   const defaultWelcome = {
     role: 'assistant',
-    text: `Merhaba! Ben senin yapay zeka **Akademik Çalışma Koçun (OmniStudy AI)**. 📚\n\nNotlarındaki kavramları ve formülleri derinlemesine açıklayabilir, konuların anlatıldığı ilgili videoları pedagojik bir sırayla tavsiye edebilir ve sorularını adım adım çözebilirim. Hangi konuyu veya tanımı çalışmak istersin?`,
+    text: `Merhaba! Ben senin yapay zeka **${courseTitle} Çalışma Koçun (OmniStudy AI)**. 📚\n\nNotlarındaki kavramları ve formülleri derinlemesine açıklayabilir, konuların anlatıldığı ilgili videoları pedagojik bir sırayla tavsiye edebilir ve sorularını adım adım çözebilirim. Hangi konuyu veya tanımı çalışmak istersin?`,
     timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   };
 
   const [messages, setMessages] = useState(() => {
     try {
+      // Purge any legacy zombie storage keys
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith('omnistudy_chat_v2_') || key.startsWith('omnistudy_chat_v3_') || key.startsWith('omnistudy_chat_default'))) {
+          localStorage.removeItem(key);
+        }
+      }
       const saved = localStorage.getItem(storageKey);
       if (saved) return JSON.parse(saved);
     } catch (e) {}
@@ -55,17 +64,21 @@ export default function AITutorPanel({
     } catch (e) {}
   }, [messages, storageKey]);
 
-  // If course changed, switch history
+  // If course changed, switch history cleanly
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(`omnistudy_chat_v2_${courseId}`);
+      localStorage.removeItem(`omnistudy_chat_v2_${courseId}`);
+      localStorage.removeItem(`omnistudy_chat_v3_${courseId}`);
+      const saved = localStorage.getItem(storageKey);
       if (saved) {
         setMessages(JSON.parse(saved));
       } else {
         setMessages([defaultWelcome]);
       }
-    } catch (e) {}
-  }, [courseId]);
+    } catch (e) {
+      setMessages([defaultWelcome]);
+    }
+  }, [courseId, storageKey]);
 
   // Auto scroll
   useEffect(() => {
@@ -84,16 +97,24 @@ export default function AITutorPanel({
     const textToSend = messageText || input;
     if (!textToSend.trim() || isLoading) return;
 
+    // Use selected snippet for THIS message only
+    const attachedSnippet = selectedText || null;
+
     const userMsg = {
       role: 'user',
       text: textToSend,
-      selectedSnippet: selectedText || null,
+      selectedSnippet: attachedSnippet,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setIsLoading(true);
+
+    // Immediately clear selected snippet so subsequent messages do NOT keep it stuck!
+    if (onClearSelectedText) {
+      onClearSelectedText();
+    }
 
     try {
       const historyToSend = messages
@@ -106,7 +127,7 @@ export default function AITutorPanel({
 
       const response = await onAskTutor({
         message: textToSend,
-        selected_text: selectedText || null,
+        selected_text: attachedSnippet,
         context_material_id: activeMaterialId || null,
         history: historyToSend
       });
@@ -147,6 +168,9 @@ export default function AITutorPanel({
       setMessages(resetList);
       try {
         localStorage.setItem(storageKey, JSON.stringify(resetList));
+        localStorage.removeItem(`omnistudy_chat_${courseId}`);
+        localStorage.removeItem(`omnistudy_chat_v2_${courseId}`);
+        localStorage.removeItem(`omnistudy_chat_v3_${courseId}`);
       } catch (e) {}
     }
   };
@@ -304,6 +328,22 @@ export default function AITutorPanel({
 
       {/* 4. Input Form */}
       <div className="p-2.5 border-t border-slate-800 bg-slate-900/90 shrink-0">
+        {selectedText && (
+          <div className="mb-2 px-2.5 py-1.5 rounded-lg bg-indigo-950/80 border border-indigo-500/40 flex items-center justify-between text-[11px] text-indigo-300 animate-fadeIn">
+            <span className="truncate max-w-[85%]">
+              <span className="font-semibold text-indigo-200">İncelenecek Not Kesiti:</span> "{selectedText.slice(0, 70)}..."
+            </span>
+            <button
+              type="button"
+              onClick={onClearSelectedText}
+              className="p-1 hover:text-white text-indigo-400 transition"
+              title="Kesiti Kaldır"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         <div className="relative flex items-center">
           <textarea
             rows="2"

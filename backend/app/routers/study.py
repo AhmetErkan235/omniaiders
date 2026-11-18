@@ -182,6 +182,8 @@ def ask_tutor(req: AskTutorRequest):
     explicit_material = detect_referenced_material(effective_topic_query, all_materials)
     active_material = next((m for m in all_materials if m['id'] == req.context_material_id), None)
 
+    target_material, target_page = None, None
+
     if explicit_material:
         target_material = explicit_material
         target_page = find_relevant_note_page(target_material.get('content') or '', req.selected_text or effective_topic_query)
@@ -189,19 +191,21 @@ def ask_tutor(req: AskTutorRequest):
             target_page = find_relevant_note_page(target_material.get('content') or '', search_query)
         if not target_page:
             target_page = {'page': 1, 'location': 'Sayfa 1', 'score': 10, 'excerpt': (target_material.get('content') or '')[:1000]}
+    elif req.selected_text and active_material:
+        # If user explicitly selected a snippet of text on the current page, stay on this material
+        target_material = active_material
+        target_page = find_relevant_note_page(active_material.get('content') or '', req.selected_text)
+        if not target_page:
+            target_page = {'page': 1, 'location': 'Sayfa 1', 'score': 100, 'excerpt': req.selected_text[:1200]}
     else:
-        active_page = find_relevant_note_page(
-            active_material.get('content') or '', req.selected_text or effective_topic_query
-        ) if active_material else None
+        # User asked a topic question in chat: search across all materials
         best_material, best_page = find_best_material(all_materials, search_query)
-        if active_page and (not best_page or active_page['score'] >= best_page['score']):
-            target_material, target_page = active_material, active_page
-        else:
+        if best_material and best_page and best_page.get('score', 0) >= 10:
             target_material, target_page = best_material, best_page
-        if not target_material and active_material:
-            target_material = active_material
-        elif not target_material and all_materials:
-            target_material = all_materials[0]
+        elif active_material:
+            active_page = find_relevant_note_page(active_material.get('content') or '', search_query)
+            if active_page and active_page.get('score', 0) >= 10:
+                target_material, target_page = active_material, active_page
 
     notes_context = ""
     if target_material and target_page:
@@ -212,6 +216,11 @@ def ask_tutor(req: AskTutorRequest):
     elif target_material:
         content_preview = (target_material.get('content') or '')[:3000]
         notes_context = f"Kaynak Materyal: {target_material['title']}\n{content_preview}"
+    else:
+        notes_context = (
+            "Ders Notlarında Bulunmuyor: Yüklenen ders materyallerinde bu konunun doğrudan bir tanımı yer almamaktadır. "
+            "Konu anlatımı ve soru çözümleri için ilgili YouTube videolarını kullanabilirsin."
+        )
 
     # Precise Timestamp Alignment across candidate videos
     matched_videos = match_topic_to_video_timestamps(
@@ -234,6 +243,30 @@ def ask_tutor(req: AskTutorRequest):
     else:
         video_context += "(Bu konu için henüz eşleşen bir video bulunamadı.)\n"
 
+    # If a target page is identified, render its visual page image for Gemini Vision
+    page_image_bytes = None
+    if target_material and target_page and target_material.get('file_path'):
+        fpath = target_material['file_path']
+        if os.path.exists(fpath):
+            ext = Path(fpath).suffix.lower()
+            if ext == '.pdf':
+                try:
+                    import fitz
+                    p_num = int(target_page.get('page') or 1)
+                    doc = fitz.open(fpath)
+                    if 1 <= p_num <= len(doc):
+                        pix = doc.load_page(p_num - 1).get_pixmap(dpi=150)
+                        page_image_bytes = pix.tobytes("jpeg")
+                    doc.close()
+                except Exception:
+                    pass
+            elif ext in ('.png', '.jpg', '.jpeg', '.webp'):
+                try:
+                    with open(fpath, 'rb') as f:
+                        page_image_bytes = f.read()
+                except Exception:
+                    pass
+
     conn.close()
 
     answer = ask_tutor_llm(
@@ -242,7 +275,8 @@ def ask_tutor(req: AskTutorRequest):
         notes_context=notes_context,
         video_context=video_context,
         selected_text=req.selected_text,
-        history=req.history
+        history=req.history,
+        page_image_bytes=page_image_bytes
     )
 
     top_match = matched_videos[0] if matched_videos else None

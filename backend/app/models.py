@@ -54,5 +54,9 @@ class QuizGenerateRequest(BaseModel):
     topic: Optional[str] = None
     count: Optional[int] = 5
 
+class PlaylistDiscoverRequest(BaseModel):
+    course_id: int
+    query: str
+
 class SettingsUpdate(BaseModel):
     gemini_api_key: Optional[str] = None

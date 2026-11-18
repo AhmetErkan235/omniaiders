@@ -232,6 +232,7 @@ export default function App() {
                 onAskTutor={handleAskTutor}
                 activeMaterialId={activeMaterialId}
                 selectedText={selectedTextSnippet}
+                onClearSelectedText={() => setSelectedTextSnippet('')}
                 onSeekTimestamp={handleSeekTimestamp}
                 onTriggerQuiz={() => setIsQuizModalOpen(true)}
                 isMaximized={maximizedPanel === 'tutor'}
@@ -274,6 +275,7 @@ export default function App() {
                     isMinimized={minimizedPanels.video}
                     onToggleMinimize={() => toggleMinimize('video')}
                     courseId={activeCourse?.id}
+                    onOpenYouTube={() => setIsYouTubeModalOpen(true)}
                   />
                 </div>
               )}
@@ -346,6 +348,7 @@ export default function App() {
         isOpen={isYouTubeModalOpen}
         onClose={() => setIsYouTubeModalOpen(false)}
         courseId={activeCourse?.id}
+        courseName={activeCourse?.name || activeCourse?.title || ''}
         onAddYouTube={async (cId, url) => {
           await api.addYouTubeSource(cId, url);
           if (activeCourse) selectCourse(activeCourse);

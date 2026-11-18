@@ -90,13 +90,48 @@ def extract_text_from_image_vision(image_path: str) -> str:
     except Exception as e:
         return f"Görsel analiz edilirken hata oluştu: {str(e)}"
 
+def analyze_page_with_vision(image_bytes: bytes, course_name: str = "", page_number: int = 1) -> str:
+    """
+    Analyzes a lecture slide / document page image using Gemini Multimodal Vision.
+    Extracts formulas, diagrams, chemical/physical structures, reaction mechanisms,
+    charts, and writes structured academic markdown notes.
+    """
+    client = get_client()
+    if not client:
+        return "Görsel analizi için geçerli bir Gemini API anahtarı gereklidir."
+
+    prompt = (
+        f"Sen '{course_name or 'Üniversite'}' dersi için uzman bir akademisyen ve çalışma koçusun. "
+        f"Bu {page_number}. sayfa/slayt görselini çok dikkatli ve ayrıntılı incele.\n\n"
+        "GÖREVLERİN:\n"
+        "1. Görseldeki tüm başlıkları, tanımları, kavramları ve açıklamaları eksiksiz metne dök.\n"
+        "2. Eğer kimyasal yapılar, moleküler orbital şemaları, reaksiyonlar, mekanizmalar, formüller, grafikler veya fiziksel modeller varsa: "
+        "bunların ne anlama geldiğini, hangi atom/bağ/etkileşim türünü gösterdiğini adım adım pedagojik olarak açıkla.\n"
+        "3. Matematiksel veya kimyasal formülleri KaTeX / LaTeX formatında (örneğin $H_2O$, $sp^3$, $\\Delta H$, $f'(x)$ gibi) yaz.\n"
+        "4. Öğrencinin sınavda bu sayfayla ilgili karşılaşabileceği püf noktaları ve kritik çıkarımları 'Hocanın Püf Noktası' olarak belirt.\n"
+        "5. Çıktıyı zengin, anlaşılır ve temiz Türkçe Markdown formatında sun."
+    )
+
+    try:
+        response = generate_with_fallback(
+            client=client,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                prompt
+            ]
+        )
+        return response.text or ""
+    except Exception as e:
+        return f"Görsel analiz edilirken bir hata oluştu: {str(e)}"
+
 def ask_tutor_llm(
     course_name: str,
     user_message: str,
     notes_context: str = "",
     video_context: str = "",
     selected_text: Optional[str] = None,
-    history: Optional[List[Dict[str, Any]]] = None
+    history: Optional[List[Dict[str, Any]]] = None,
+    page_image_bytes: Optional[bytes] = None
 ) -> str:
     """
     Intelligent Study Tutor that explains concepts, teaches step-by-step,
@@ -109,7 +144,7 @@ def ask_tutor_llm(
             return f"Ders notlarından ilgili bölüm:\n\n{notes_context[:1000]}\n\nSorunuz ('{user_message}') hakkında detaylı bir anlatım için lütfen Ayarlar'dan geçerli bir Gemini API anahtarı ekleyin."
         return f"Sorunuz ('{user_message}') alındı. Detaylı yapay zeka konu anlatımı için lütfen Ayarlar'dan Gemini API anahtarı ekleyin."
 
-    system_prompt = """Sen üniversite ve sınav dersleri için üst düzey, samimi ve son derece bilgili bir Yapay Zeka Akademik Çalışma Koçusun (OmniStudy AI Tutor). Görevin öğrenciye konuyu en derin, kapsamlı, pedagojik ve anlaşılır şekilde öğretmek; kavramları sağlam temellere oturtmak ve ders notlarındaki konuları ilgili YouTube videolarıyla bağdaştırmaktır.
+    system_prompt = r"""Sen üniversite ve sınav dersleri için üst düzey, samimi ve son derece bilgili bir Yapay Zeka Akademik Çalışma Koçusun (OmniStudy AI Tutor). Görevin öğrenciye konuyu en derin, kapsamlı, pedagojik ve anlaşılır şekilde öğretmek; kavramları sağlam temellere oturtmak ve ders notlarındaki konuları ilgili YouTube videolarıyla bağdaştırmaktır.
 
 TEMEL PRENSİPLER VE KURALLAR:
 1. DOĞAL İNSAN DİYALOĞU VE SOHBET BAĞLAMI:
@@ -154,7 +189,11 @@ TEMEL PRENSİPLER VE KURALLAR:
     final_prompt = f"{history_prompt}{context_prompt}\nÖğrencinin Güncel Sorusu / Talebi: {user_message}"
 
     try:
-        response = generate_with_fallback(client=client, contents=[system_prompt, final_prompt])
+        call_contents = [system_prompt]
+        if page_image_bytes:
+            call_contents.append(types.Part.from_bytes(data=page_image_bytes, mime_type="image/jpeg"))
+        call_contents.append(final_prompt)
+        response = generate_with_fallback(client=client, contents=call_contents)
         text = (getattr(response, 'text', None) or '').strip()
         if text:
             return text
@@ -338,3 +377,95 @@ def generate_quiz_questions(course_name: str, topic: str, context_text: str, cou
     except Exception as e:
         print(f"Quiz generation error: {e}")
         return default_questions
+
+
+def discover_curriculum_and_playlists(
+    course_name: str,
+    query: str,
+    materials_summary: str = ""
+) -> Dict[str, Any]:
+    """
+    Analyzes course syllabus/curriculum using Gemini and discovers verified
+    domestic and international YouTube playlists matching that curriculum.
+    """
+    from .youtube_service import search_youtube_playlists
+
+    clean_query = (query or course_name or "Üniversite Dersi").strip()
+    client = get_client()
+
+    parsed = None
+    if client:
+        prompt = (
+            f"Sen üniversite müfredatı ve akademik kaynak uzmanısın.\n"
+            f"Öğrencinin aradığı ders/üniversite:\n"
+            f"Arama / İstek: \"{clean_query}\"\n"
+            f"Sistemdeki Ders Adı: \"{course_name}\"\n"
+            f"Yüklenmiş Notlar/Dosyalar: \"{materials_summary}\"\n\n"
+            "GÖREV:\n"
+            "1. Bu dersin akademik müfredatını (hangi üniversite/bölüm seviyesinde olursa olsun) analiz et.\n"
+            "2. Müfredatın ana konularını listele.\n"
+            "3. Bu konuları en iyi anlatan TÜRKÇE (yerli) ve YABANCI (global) en popüler YouTube kanallarını ve oynatma listelerini bulabilmek için tam arama sorguları ('search_targets') oluştur.\n"
+            "Arama sorguları kanal adı + ders/konu formatında net ve kısa olmalı (örn: 'Üniversite Kimyası Genel Kimya 1', 'The Organic Chemistry Tutor General Chemistry', 'Professor Dave Explains General Chemistry', 'Buders Calculus 1').\n"
+            "4. Her hedef için öğrencinin nasıl faydalanacağını açıklayan pedagojik bir gerekçe ('pedagogical_focus') ekle.\n\n"
+            "Lütfen SADECE aşağıdaki JSON formatında yanıt ver (başka metin veya markdown tırnakları olmadan):\n"
+            "{\n"
+            "  \"course_title\": \"Dersin Resmi Adı ve Kodu\",\n"
+            "  \"curriculum_summary\": \"Müfredat kapsamı ve öğrenim hedefleri hakkında 2-3 cümlelik özet.\",\n"
+            "  \"core_topics\": [\"Konu 1\", \"Konu 2\", \"Konu 3\", \"Konu 4\", \"Konu 5\"],\n"
+            "  \"search_targets\": [\n"
+            "    {\"query\": \"Türkçe Kanal ve Konu\", \"category\": \"yerli\", \"pedagogical_focus\": \"Neden önerildiği ve nasıl çalışılacağı\"},\n"
+            "    {\"query\": \"İngilizce Kanal ve Konu\", \"category\": \"global\", \"pedagogical_focus\": \"Neden önerildiği ve nasıl çalışılacağı\"}\n"
+            "  ]\n"
+            "}"
+        )
+        try:
+            response = generate_with_fallback(client=client, contents=prompt)
+            text = response.text.strip()
+            if text.startswith("```json"):
+                text = text[7:]
+            if text.startswith("```"):
+                text = text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+            parsed = json.loads(text)
+        except Exception as e:
+            print(f"Error analyzing curriculum with Gemini: {e}")
+
+    # Fallback structure if Gemini is unavailable or JSON parsing fails
+    if not parsed or not isinstance(parsed, dict):
+        parsed = {
+            "course_title": course_name or clean_query,
+            "curriculum_summary": f"'{clean_query}' dersi için akademik müfredat konuları ve temel soru tipleri.",
+            "core_topics": ["Temel Kavramlar ve Tanımlar", "Teorik Altyapı", "Örnek Problem Çözümleri", "Sınav Soru Tipleri"],
+            "search_targets": [
+                {
+                    "query": f"{clean_query} konu anlatımı",
+                    "category": "yerli",
+                    "pedagogical_focus": "Konu anlatımı ve vize/final hazırlık soru çözümleri."
+                },
+                {
+                    "query": f"{clean_query} full course",
+                    "category": "global",
+                    "pedagogical_focus": "Uluslararası standartlarda kapsamlı ders serisi ve problem çözümleri."
+                }
+            ]
+        }
+
+    search_targets = parsed.get("search_targets") or []
+    if not isinstance(search_targets, list) or len(search_targets) == 0:
+        search_targets = [
+            {"query": f"{clean_query} konu anlatımı", "category": "yerli", "pedagogical_focus": "Yerli konu anlatımı ve soru çözümleri."},
+            {"query": f"{clean_query} full course", "category": "global", "pedagogical_focus": "Kapsamlı ders anlatımları ve problem çözümleri."}
+        ]
+
+    # Search YouTube concurrently with playlist filter to get live, valid playlists
+    live_playlists = search_youtube_playlists(search_targets, max_per_target=1)
+
+    return {
+        "course_query": clean_query,
+        "course_title": parsed.get("course_title", course_name or clean_query),
+        "curriculum_summary": parsed.get("curriculum_summary", ""),
+        "core_topics": parsed.get("core_topics", []),
+        "playlists": live_playlists
+    }

@@ -2,15 +2,16 @@ import re
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List
 from ..database import get_db
-from ..models import YouTubeAddRequest
+from ..models import YouTubeAddRequest, PlaylistDiscoverRequest
 from ..services.youtube_service import (
     extract_video_id,
     is_playlist_url,
     fetch_playlist_or_channel_videos,
     fetch_single_video_metadata,
-    fetch_transcript_chunks
+    fetch_transcript_chunks,
+    clean_and_harmonize_chapters
 )
-from ..services.llm_service import generate_video_chapters
+from ..services.llm_service import generate_video_chapters, discover_curriculum_and_playlists
 
 router = APIRouter(prefix="/api/youtube", tags=["youtube"])
 
@@ -202,26 +203,21 @@ def get_video_chapters(course_id: int, video_id: str):
                     'description': '',
                     'source': 'youtube'
                 })
-    def is_valid_creator_chapters(items):
-        if not items or len(items) < 3:
-            return False
-        for i in range(len(items) - 1):
-            if (items[i+1]['start_seconds'] - items[i]['start_seconds']) < 25:
-                return False
-        seen_t = set()
-        for ch in items:
-            cl = re.sub(r'[\s\.\-_]+', '', ch['title'].lower())
-            if cl in seen_t:
-                return False
-            seen_t.add(cl)
-        return True
 
-    if creator_chapters and is_valid_creator_chapters(creator_chapters):
-        chapters = creator_chapters
+    cleaned_creator = clean_and_harmonize_chapters(creator_chapters, video['title'])
+    if cleaned_creator and len(cleaned_creator) >= 2:
+        chapters = cleaned_creator
     else:
         chapters = generate_video_chapters(video['title'], chunks)
+        chapters = clean_and_harmonize_chapters(chapters, video['title'])
+
     if not chapters:
-        return []
+        chapters = [{
+            'start_seconds': 0.0,
+            'title': f"{video['title'][:45]} — Konu Anlatımı",
+            'description': 'Ders videosu konu anlatımı.',
+            'source': 'fallback'
+        }]
 
     conn = get_db()
     cursor = conn.cursor()
@@ -257,3 +253,32 @@ def delete_video(course_id: int, video_id: str):
     conn.commit()
     conn.close()
     return {"message": "Video ve transkriptleri silindi."}
+
+
+@router.post("/discover-curriculum-playlists")
+def discover_curriculum_playlists(req: PlaylistDiscoverRequest):
+    """
+    Analyzes course syllabus/curriculum and user query, discovering
+    verified domestic and global YouTube playlists.
+    """
+    course_id = req.course_id
+    query = req.query.strip()
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, description FROM courses WHERE id = ?", (course_id,))
+    course_row = cursor.fetchone()
+    
+    # Also fetch existing material titles to ground the syllabus analysis
+    cursor.execute("SELECT title FROM materials WHERE course_id = ?", (course_id,))
+    mat_rows = cursor.fetchall()
+    conn.close()
+    
+    course_name = course_row['name'] if course_row else ""
+    materials_summary = ", ".join([r['title'] for r in mat_rows]) if mat_rows else ""
+    
+    return discover_curriculum_and_playlists(
+        course_name=course_name,
+        query=query,
+        materials_summary=materials_summary
+    )
